@@ -75,6 +75,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./_site
+          force_orphan: true # this is required to force push to the gh-pages branch. This allows you to make your publish branch with only the latest commit.
           # if the repo you are deploying to is <username>.github.io, uncomment the line below.
           # if you are including the line below, make sure your source files are NOT in the master branch:
           # publish_branch: main
