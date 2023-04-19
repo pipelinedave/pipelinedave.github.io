@@ -56,7 +56,7 @@ jobs:
         run: bundle exec jekyll build
 
 
-      
+
       - name: 🚀 deploy
         uses: peaceiris/actions-gh-pages@v3
         with:
@@ -65,4 +65,4 @@ jobs:
           force_orphan: true # this is required to force push to the gh-pages branch. This allows you to make your publish branch with only the latest commit.
           # if the repo you are deploying to is <username>.github.io, uncomment the line below.
           # if you are including the line below, make sure your source files are NOT in the master branch:
-          # publish_branch: main
+          publish_branch: gh-pages
