@@ -13,6 +13,8 @@ on:
 jobs:
   jekyll:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # allows the action to commit and push files to the repository.
     steps:
       - name: 📂 setup
         uses: actions/checkout@v3
