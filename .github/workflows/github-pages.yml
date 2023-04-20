@@ -32,9 +32,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gems-
 
+      - name: 🔧 Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 2.7
+
       - name: 🚀 Build and deploy
         # Specify the Jekyll source location as a parameter
-        uses: helaili/jekyll-action@v3
+        uses: helaili/jekyll-action@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           jekyll_src: 'jekyll'
