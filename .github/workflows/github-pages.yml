@@ -24,11 +24,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gems-
 
-      - name: ⬆️ Update RubyGems
-        run: gem update --system
-
       - name: 🚀 Build and deploy
         uses: helaili/jekyll-action@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           jekyll_src: 'jekyll'
+          pre_build_commands: 'gem update --system'
