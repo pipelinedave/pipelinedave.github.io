@@ -4,6 +4,7 @@ _site/
 .jekyll-cache/
 .jekyll-metadata
 vendor/
+*.lock
 
 # Webhook
 __pycache__/
