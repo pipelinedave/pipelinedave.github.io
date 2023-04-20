@@ -24,9 +24,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gems-
 
-      - name: ⬆️ Update RubyGems
-        run: gem update --system
-
       - name: 🚀 Build and deploy
         uses: helaili/jekyll-action@v2
         with:
