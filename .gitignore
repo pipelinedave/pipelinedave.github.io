@@ -12,3 +12,6 @@ __pycache__/
 
 # docker-compose
 .env
+
+# assets
+*.zip
