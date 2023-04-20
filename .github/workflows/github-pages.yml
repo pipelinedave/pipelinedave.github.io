@@ -24,11 +24,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gems-
 
-      - name: 🔧 Set up Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: 2.7
-
       - name: ⬆️ Update RubyGems
         run: gem update --system
 
