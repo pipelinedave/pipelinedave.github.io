@@ -4,25 +4,17 @@ on:
   push:
     branches:
       - main
-      # - source
-      # It is highly recommended that you only run this action on push to a
-      # specific branch, eg. master or source (if on *.github.io repo)
 
-  workflow_dispatch: # Allows a run of this workflow to be triggerred manually from the Actions tab
+  workflow_dispatch:
 
 jobs:
   jekyll:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # allows the action to commit and push files to the repository.
+      contents: write
     steps:
       - name: 📂 setup
         uses: actions/checkout@v3
-        # include the lines below if you are using jekyll-last-modified-at
-        # or if you would otherwise need to fetch the full commit history
-        # however this may be very slow for large repositories!
-        # with:
-        # fetch-depth: '0'
 
       - name: 🎁 Cache Ruby gems
         uses: actions/cache@v3
@@ -37,8 +29,10 @@ jobs:
         with:
           ruby-version: 2.7
 
+      - name: ⬆️ Update RubyGems
+        run: gem update --system
+
       - name: 🚀 Build and deploy
-        # Specify the Jekyll source location as a parameter
         uses: helaili/jekyll-action@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
