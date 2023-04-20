@@ -1,7 +1,7 @@
 ---
 title: "Understanding GitHub Actions and Ruby Versions for Jekyll: Resolving Compatibility Issues"
 author: Dave
-date: 2023-04-20 11:35:00
+date: 2023-04-20
 categories: [devops, tutorial]
 tags: [jekyll, github, ruby, github-actions]
 ---
