@@ -15,8 +15,6 @@ jobs:
     steps:
       - name: 📂 setup
         uses: actions/checkout@v3
-        with:
-          submodules: true
 
       - name: 🎁 Cache Ruby gems
         uses: actions/cache@v2
