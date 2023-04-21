@@ -5,9 +5,13 @@ date: 2023-04-22
 tags: [DevOps, Jekyll, GitHub Pages]
 ---
 
+## The Issue
+
 A non-tech-savvy friend of mine recently decided to open a tattoo studio. I offered to build and host a website for his new venture with minimal cost, maintenance, and coding effort. In this post, I'll share how I set up a mobile-friendly, SEO-optimized, single-scrolling landing page that makes it easy for customers to get in touch and complies with German law.
 
 First, I registered the TLD brotherhood.ink, which was available and perfectly suited for a tattoo studio. The site needed to serve as a landing page, featuring a simple contact form, a list of offered services, and owner information. Ideally, the site would also integrate the artist's Instagram feed, filtering by specific hashtags to keep content fresh and relevant.
+
+## The Solution
 
 To achieve this, I chose [GitHub Pages](https://pages.github.com/) as a free, highly available hosting platform, and [Jekyll](https://jekyllrb.com/) as a static site generator. I configured the domain's DNS to point to GitHub Pages and set up the repository accordingly.
 
@@ -63,6 +67,8 @@ jobs:
 ```
 
 After configuring the deployment branch and enabling HTTPS, I navigated to <https://brotherhood.ink> and saw the theme's default look. I then replaced the stock content with the actual business information, tweaked the layout, and replaced the header image.
+
+## Conclusion
 
 There's still work to be done, such as integrating the Instagram feed, utilizing the installed Jekyll plugins like jekyll-seo-tag, setting up Google Analytics, configuring a mail server, and more. Stay tuned for updates!
 
