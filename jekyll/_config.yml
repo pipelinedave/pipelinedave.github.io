@@ -12,6 +12,7 @@ url: "https://pipelinedave.github.io"
 plugins:
   - jekyll-paginate
   - jekyll-sitemap
+  - jekyll-feed
 
 # Pagination settings
 paginate: 10

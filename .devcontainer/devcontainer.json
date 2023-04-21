@@ -27,7 +27,7 @@
 			}
 		}
 	},
-	"postCreateCommand": "bundle install --gemfile=Gemfile-dev",
+	"postCreateCommand": "bundle install --gemfile=Gemfile",
 	// "postStartCommand": "jekyll serve",
 	"mounts": [
 		// "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
