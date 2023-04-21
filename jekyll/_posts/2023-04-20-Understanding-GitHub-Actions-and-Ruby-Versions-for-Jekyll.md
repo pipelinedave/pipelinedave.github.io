@@ -4,8 +4,6 @@ date: 2023-04-20
 tags: [jekyll, github, ruby, github-actions]
 ---
 
-## Understanding GitHub Actions and Ruby Versions for Jekyll: Resolving Compatibility Issues
-
 *Author's note: I recently encountered an issue with one of my Jekyll projects when using GitHub Actions to build and deploy the site. After some tinkering and research, I discovered how Ruby versions are managed in Jekyll projects and GitHub Actions workflows, and how to resolve compatibility issues. I thought I'd share this knowledge with the community in the hopes it might help someone else.*
 
 ## The Issue

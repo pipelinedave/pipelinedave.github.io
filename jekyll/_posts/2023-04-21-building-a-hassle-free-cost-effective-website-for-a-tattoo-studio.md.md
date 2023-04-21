@@ -5,8 +5,6 @@ date: 2023-04-22
 tags: [DevOps, Jekyll, GitHub Pages]
 ---
 
-## Building a Cost-Effective, Hassle-Free Website for a Tattoo Studio
-
 A non-tech-savvy friend of mine recently decided to open a tattoo studio. I offered to build and host a website for his new venture with minimal cost, maintenance, and coding effort. In this post, I'll share how I set up a mobile-friendly, SEO-optimized, single-scrolling landing page that makes it easy for customers to get in touch and complies with German law.
 
 First, I registered the TLD brotherhood.ink, which was available and perfectly suited for a tattoo studio. The site needed to serve as a landing page, featuring a simple contact form, a list of offered services, and owner information. Ideally, the site would also integrate the artist's Instagram feed, filtering by specific hashtags to keep content fresh and relevant.
