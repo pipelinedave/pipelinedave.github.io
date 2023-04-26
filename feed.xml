@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en"><generator uri="https://jekyllrb.com/" version="4.3.2">Jekyll</generator><link href="https://pipelinedave.github.io/feed.xml" rel="self" type="application/atom+xml" /><link href="https://pipelinedave.github.io/" rel="alternate" type="text/html" hreflang="en" /><updated>2023-04-26T12:37:15+02:00</updated><id>https://pipelinedave.github.io/feed.xml</id><title type="html">lowlifehigh.tech</title><subtitle>high tech, low life</subtitle><entry><title type="html">Building a Cost-Effective, Hassle-Free Website for a Tattoo Studio</title><link href="https://pipelinedave.github.io/posts/building-a-hassle-free-cost-effective-website-for-a-tattoo-studio.md/" rel="alternate" type="text/html" title="Building a Cost-Effective, Hassle-Free Website for a Tattoo Studio" /><published>2023-04-22T00:00:00+02:00</published><updated>2023-04-22T00:00:00+02:00</updated><id>https://pipelinedave.github.io/posts/building-a-hassle-free-cost-effective-website-for-a-tattoo-studio.md</id><content type="html" xml:base="https://pipelinedave.github.io/posts/building-a-hassle-free-cost-effective-website-for-a-tattoo-studio.md/"><![CDATA[<h2 id="the-issue">The Issue</h2>
+
+<p>A non-tech-savvy friend of mine recently decided to open a tattoo studio. I offered to build and host a website for his new venture with minimal cost, maintenance, and coding effort. In this post, I’ll share how I set up a mobile-friendly, SEO-optimized, single-scrolling landing page that makes it easy for customers to get in touch and complies with German law.</p>
+
+<p>First, I registered the TLD brotherhood.ink, which was available and perfectly suited for a tattoo studio. The site needed to serve as a landing page, featuring a simple contact form, a list of offered services, and owner information. Ideally, the site would also integrate the artist’s Instagram feed, filtering by specific hashtags to keep content fresh and relevant.</p>
+
+<h2 id="the-solution">The Solution</h2>
+
+<p>To achieve this, I chose <a href="https://pages.github.com/">GitHub Pages</a> as a free, highly available hosting platform, and <a href="https://jekyllrb.com/">Jekyll</a> as a static site generator. I configured the domain’s DNS to point to GitHub Pages and set up the repository accordingly.</p>
+
+<p>I found a free theme that met our requirements: <a href="https://github.com/y7kim/agency-jekyll-theme">Agency Jekyll Theme</a>. I cloned the theme’s repository into a “jekyll” subfolder within our project root, which simplified the deployment process.</p>
+
+<p>Next, I created a Gemfile to list the required Ruby Gems like Jekyll and some additional helpful gems:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+2
+3
+4
+5
+6
+</pre></td><td class="rouge-code"><pre><span class="n">source</span> <span class="s1">'https://rubygems.org'</span>
+<span class="n">gem</span> <span class="s1">'jekyll'</span>
+<span class="n">gem</span> <span class="s1">'jekyll-paginate'</span>
+<span class="n">gem</span> <span class="s1">'jekyll-sitemap'</span>
+<span class="n">gem</span> <span class="s1">'jekyll-feed'</span>
+<span class="n">gem</span> <span class="s1">'jekyll-seo-tag'</span>
+</pre></td></tr></tbody></table></code></pre></div></div>
+
+<p>I also added a GitHub workflow that automates the process of building and deploying the Jekyll site to the gh-pages branch whenever changes are pushed to the main branch or a manual dispatch is triggered. The workflow caches Ruby gems and uses the <a href="https://github.com/helaili/jekyll-action">jekyll-action</a> to build and deploy the site.</p>
+
+<div class="language-yaml highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+</pre></td><td class="rouge-code"><pre><span class="na">name</span><span class="pi">:</span> <span class="s">Build and deploy to branch gh-pages</span>
+
+<span class="na">on</span><span class="pi">:</span>
+  <span class="na">push</span><span class="pi">:</span>
+    <span class="na">branches</span><span class="pi">:</span>
+      <span class="pi">-</span> <span class="s">main</span>
+
+  <span class="na">workflow_dispatch</span><span class="pi">:</span>
+
+<span class="na">jobs</span><span class="pi">:</span>
+  <span class="na">build-and-deploy-jekyll-src-to-branch-gh-pages</span><span class="pi">:</span>
+    <span class="na">runs-on</span><span class="pi">:</span> <span class="s">ubuntu-latest</span>
+    <span class="na">permissions</span><span class="pi">:</span>
+      <span class="na">contents</span><span class="pi">:</span> <span class="s">write</span>
+    <span class="na">steps</span><span class="pi">:</span>
+      <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">📂 setup</span>
+        <span class="na">uses</span><span class="pi">:</span> <span class="s">actions/checkout@v3</span>
+
+      <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">🎁 Cache Ruby gems</span>
+        <span class="na">uses</span><span class="pi">:</span> <span class="s">actions/cache@v3</span>
+        <span class="na">with</span><span class="pi">:</span>
+          <span class="na">path</span><span class="pi">:</span> <span class="s">vendor/bundle</span>
+          <span class="na">key</span><span class="pi">:</span> <span class="s">$-gems-$</span>
+          <span class="na">restore-keys</span><span class="pi">:</span> <span class="pi">|</span>
+            <span class="s">$-gems-</span>
+
+      <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">🚀 Build and deploy</span>
+        <span class="na">uses</span><span class="pi">:</span> <span class="s">helaili/jekyll-action@v2</span>
+        <span class="na">with</span><span class="pi">:</span>
+          <span class="na">token</span><span class="pi">:</span> <span class="s">$</span>
+          <span class="na">jekyll_src</span><span class="pi">:</span> <span class="s1">'</span><span class="s">jekyll'</span>
+          <span class="na">target_branch</span><span class="pi">:</span> <span class="s1">'</span><span class="s">gh-pages'</span>
+          <span class="na">pre_build_commands</span><span class="pi">:</span> <span class="s1">'</span><span class="s">gem</span><span class="nv"> </span><span class="s">update</span><span class="nv"> </span><span class="s">--system'</span>
+</pre></td></tr></tbody></table></code></pre></div></div>
+
+<p>After configuring the deployment branch and enabling HTTPS, I navigated to <a href="https://brotherhood.ink">https://brotherhood.ink</a> and saw the theme’s default look. I then replaced the stock content with the actual business information, tweaked the layout, and replaced the header image.</p>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>There’s still work to be done, such as integrating the Instagram feed, utilizing the installed Jekyll plugins like jekyll-seo-tag, setting up Google Analytics, configuring a mail server, and more. Stay tuned for updates!</p>
+
+<p>Here’s a list of the technologies utilized:</p>
+
+<ul>
+  <li><a href="https://pages.github.com/">GitHub Pages</a></li>
+  <li><a href="https://jekyllrb.com/">Jekyll</a></li>
+  <li><a href="https://github.com/y7kim/agency-jekyll-theme">Agency Jekyll Theme</a></li>
+  <li><a href="https://github.com/jekyll/jekyll-seo-tag">Jekyll SEO Tag</a></li>
+  <li><a href="https://github.com/jekyll/jekyll-sitemap">Jekyll Sitemap</a></li>
+  <li><a href="https://github.com/jekyll/jekyll-feed">Jekyll Feed</a></li>
+  <li><a href="https://github.com/jekyll/jekyll-paginate">Jekyll Paginate</a></li>
+</ul>
+
+<p>This project demonstrates how to create a cost-effective, low-maintenance website using open-source technologies and free hosting services. If you’re looking for a similar solution, give it a try!</p>]]></content><author><name></name></author><category term="DevOps" /><category term="Jekyll" /><category term="GitHub Pages" /><summary type="html"><![CDATA[The Issue]]></summary></entry><entry><title type="html">Understanding GitHub Actions and Ruby Versions for Jekyll: Resolving Compatibility Issues</title><link href="https://pipelinedave.github.io/posts/Understanding-GitHub-Actions-and-Ruby-Versions-for-Jekyll/" rel="alternate" type="text/html" title="Understanding GitHub Actions and Ruby Versions for Jekyll: Resolving Compatibility Issues" /><published>2023-04-20T00:00:00+02:00</published><updated>2023-04-20T00:00:00+02:00</updated><id>https://pipelinedave.github.io/posts/Understanding-GitHub-Actions-and-Ruby-Versions-for-Jekyll</id><content type="html" xml:base="https://pipelinedave.github.io/posts/Understanding-GitHub-Actions-and-Ruby-Versions-for-Jekyll/"><![CDATA[<p><em>Author’s note: I recently encountered an issue with one of my Jekyll projects when using GitHub Actions to build and deploy the site. After some tinkering and research, I discovered how Ruby versions are managed in Jekyll projects and GitHub Actions workflows, and how to resolve compatibility issues. I thought I’d share this knowledge with the community in the hopes it might help someone else.</em></p>
+
+<h2 id="the-issue">The Issue</h2>
+
+<p>I was using the <code class="language-plaintext highlighter-rouge">helaili/jekyll-action@v2</code> Jekyll GitHub Action from the marketplace to build and deploy my site, and I came across an error in my workflow:</p>
+
+<div class="language-console highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+</pre></td><td class="rouge-code"><pre><span class="go">env: can't execute 'ruby-2.7': No such file or directory
+</span></pre></td></tr></tbody></table></code></pre></div></div>
+
+<p>Later, after some adjustments, I encountered another error:</p>
+
+<div class="language-console highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+2
+</pre></td><td class="rouge-code"><pre><span class="gp">sass-embedded-1.62.0-x86_64-linux-musl requires rubygems version &gt;</span><span class="o">=</span> 3.3.22,
+<span class="go">which is incompatible with the current version, 3.1.6
+</span></pre></td></tr></tbody></table></code></pre></div></div>
+
+<h2 id="the-solution">The Solution</h2>
+
+<p>To fix the compatibility issue with the <code class="language-plaintext highlighter-rouge">sass-embedded</code> gem, I used the <code class="language-plaintext highlighter-rouge">pre_build_commands</code> option of the <code class="language-plaintext highlighter-rouge">helaili/jekyll-action@v2</code> action to update RubyGems before building the site. Here’s my final, working GitHub Actions workflow:</p>
+
+<div class="language-yaml highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+</pre></td><td class="rouge-code"><pre><span class="na">name</span><span class="pi">:</span> <span class="s">Build and deploy jekyll site</span>
+
+<span class="na">on</span><span class="pi">:</span>
+  <span class="na">push</span><span class="pi">:</span>
+    <span class="na">branches</span><span class="pi">:</span>
+      <span class="pi">-</span> <span class="s">main</span>
+
+  <span class="na">workflow_dispatch</span><span class="pi">:</span>
+
+<span class="na">jobs</span><span class="pi">:</span>
+  <span class="na">jekyll</span><span class="pi">:</span>
+    <span class="na">runs-on</span><span class="pi">:</span> <span class="s">ubuntu-latest</span>
+    <span class="na">permissions</span><span class="pi">:</span>
+      <span class="na">contents</span><span class="pi">:</span> <span class="s">write</span>
+    <span class="na">steps</span><span class="pi">:</span>
+      <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">📂 setup</span>
+        <span class="na">uses</span><span class="pi">:</span> <span class="s">actions/checkout@v3</span>
+
+      <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">🎁 Cache Ruby gems</span>
+        <span class="na">uses</span><span class="pi">:</span> <span class="s">actions/cache@v2</span>
+        <span class="na">with</span><span class="pi">:</span>
+          <span class="na">path</span><span class="pi">:</span> <span class="s">vendor/bundle</span>
+          <span class="na">key</span><span class="pi">:</span> <span class="s">$-gems-$</span>
+          <span class="na">restore-keys</span><span class="pi">:</span> <span class="pi">|</span>
+            <span class="s">$-gems-</span>
+
+      <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">🚀 Build and deploy</span>
+        <span class="na">uses</span><span class="pi">:</span> <span class="s">helaili/jekyll-action@v2</span>
+        <span class="na">with</span><span class="pi">:</span>
+          <span class="na">token</span><span class="pi">:</span> <span class="s">$</span>
+          <span class="na">jekyll_src</span><span class="pi">:</span> <span class="s1">'</span><span class="s">jekyll'</span>
+          <span class="na">target_branch</span><span class="pi">:</span> <span class="s1">'</span><span class="s">gh-pages'</span>
+          <span class="na">pre_build_commands</span><span class="pi">:</span> <span class="s1">'</span><span class="s">gem</span><span class="nv"> </span><span class="s">update</span><span class="nv"> </span><span class="s">--system'</span>
+</pre></td></tr></tbody></table></code></pre></div></div>
+
+<p>The key addition to the workflow is the <code class="language-plaintext highlighter-rouge">pre_build_commands</code> option:</p>
+
+<div class="language-yaml highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+</pre></td><td class="rouge-code"><pre><span class="na">pre_build_commands</span><span class="pi">:</span> <span class="s1">'</span><span class="s">gem</span><span class="nv"> </span><span class="s">update</span><span class="nv"> </span><span class="s">--system'</span>
+</pre></td></tr></tbody></table></code></pre></div></div>
+
+<p>This command updates RubyGems to the latest version before building the site, which resolves the compatibility issue with the <code class="language-plaintext highlighter-rouge">sass-embedded</code> gem.</p>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>Understanding how Ruby versions and dependencies are managed in Jekyll projects and GitHub Actions workflows, and how to use the <code class="language-plaintext highlighter-rouge">pre_build_commands</code> option, helped me fix the issues I encountered and allowed me to continue building and deploying my site smoothly. I hope this post provides some insight for others who may face similar issues. Happy coding!</p>]]></content><author><name></name></author><category term="jekyll" /><category term="github" /><category term="ruby" /><category term="github-actions" /><summary type="html"><![CDATA[Author’s note: I recently encountered an issue with one of my Jekyll projects when using GitHub Actions to build and deploy the site. After some tinkering and research, I discovered how Ruby versions are managed in Jekyll projects and GitHub Actions workflows, and how to resolve compatibility issues. I thought I’d share this knowledge with the community in the hopes it might help someone else.]]></summary></entry></feed>
