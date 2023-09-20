@@ -1,7 +1,7 @@
 ---
 title: "Introducing memodawg: A Solution for Managing Long WhatsApp Voice Notes"
 date: 2023-09-17
-author: [Your Name]
+author: Dave Hallmann
 tags: ["Go", "Memoization", "Backend", "Frontend", "WhatsApp Voice Notes", "Docker", "Kubernetes"]
 ---
 
