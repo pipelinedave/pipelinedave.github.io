@@ -13,6 +13,7 @@ plugins:
   - jekyll-paginate
   - jekyll-sitemap
   - jekyll-feed
+  - jekyll-analytics
 
 # Pagination settings
 paginate: 10
@@ -190,3 +191,7 @@ jekyll-archives:
     tag: /tags/:name/
     category: /categories/:name/
 
+jekyll-analytics:
+  Matomo:
+    url: matomo.stillon.top
+    siteId: "1"
