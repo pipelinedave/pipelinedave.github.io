@@ -1,6 +1,6 @@
 # pipelinedave.github.io
 
-## source for my personal blog.
+## source for my personal blog
 
 - static site using jekyll
 - built using github actions
