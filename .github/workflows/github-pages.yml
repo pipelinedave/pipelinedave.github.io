@@ -30,4 +30,3 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           jekyll_src: 'jekyll'
           target_branch: 'gh-pages'
-          pre_build_commands: 'gem update --system --version 3.3.26'
