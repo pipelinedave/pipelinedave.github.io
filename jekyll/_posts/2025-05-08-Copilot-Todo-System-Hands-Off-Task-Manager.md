@@ -17,6 +17,7 @@ This system, which you can find in the [Copilot Todo System Template repository]
 ### The Problem: Too Many Unorganized Ideas
 
 In my daily workflow, I often encounter:
+
 - Ideas for new features while working on unrelated tasks
 - Bugs and issues that need fixing but not immediately
 - Performance improvements or maintenance tasks that are low priority
@@ -41,6 +42,7 @@ The **Copilot Todo System** is a simple yet powerful task management approach. H
 The repository includes a sample structure for `.github/copilot/Todo.md` and instructions for Copilot to follow. Here's a quick overview of the setup:
 
 #### Todo File Example
+
 ```markdown
 # Project Todo List
 
@@ -66,6 +68,7 @@ The repository includes a sample structure for `.github/copilot/Todo.md` and ins
 Copilot takes care of moving tasks from the **Inbox** to the **Organized Tasks** section, tags them, and ensures everything stays clean and sorted.
 
 #### Instructions for Copilot
+
 The system uses a `.github/copilot/CopilotTodo.md` file to provide specific guidance on how Copilot should process the Todo file. This ensures consistent behavior and adaptability over time.
 
 ---
@@ -84,7 +87,7 @@ As someone who loves automating workflows and minimizing repetitive tasks, this 
 
 ### Try It Out and Share Your Experience
 
-I’d love to hear how this system works for you and what improvements you’d suggest. Feel free to fork the repository, adapt it to your needs, and let me know your thoughts. Together, we can make task management a breeze for developers everywhere.
+I'd love to hear how this system works for you and what improvements you'd suggest. Feel free to fork the repository, adapt it to your needs, and let me know your thoughts. Together, we can make task management a breeze for developers everywhere.
 
 Happy coding!
 
