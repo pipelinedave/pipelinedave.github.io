@@ -16,6 +16,12 @@ jobs:
       - name: 📂 setup
         uses: actions/checkout@v3
 
+      - name: 💎 Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
       - name: 🎁 Cache Ruby gems
         uses: actions/cache@v3
         with:
@@ -30,3 +36,4 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           jekyll_src: 'jekyll'
           target_branch: 'gh-pages'
+          bundler_version: '2.4.12'
