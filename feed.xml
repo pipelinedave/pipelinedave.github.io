@@ -1,0 +1,809 @@
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en"><generator uri="https://jekyllrb.com/" version="4.4.1">Jekyll</generator><link href="https://lowlifehigh.tech/feed.xml" rel="self" type="application/atom+xml" /><link href="https://lowlifehigh.tech/" rel="alternate" type="text/html" hreflang="en" /><updated>2026-11-10T10:31:14+01:00</updated><id>https://lowlifehigh.tech/feed.xml</id><title type="html">lowlifehigh.tech</title><subtitle>high tech, low life</subtitle><entry><title type="html">No API? No Problem: Browser Reverse-Engineering with CDP to Supercharge AI Agents</title><link href="https://lowlifehigh.tech/2026/" rel="alternate" type="text/html" title="No API? No Problem: Browser Reverse-Engineering with CDP to Supercharge AI Agents" /><published>2026-10-03T10:00:00+02:00</published><updated>2026-10-03T10:00:00+02:00</updated><id>https://lowlifehigh.tech/no-api-no-problem-cdp-browser-reverse-engineering-to-supercharge-ai-agents</id><content type="html" xml:base="https://lowlifehigh.tech/2026/"><![CDATA[<p>My AI agents read my mail, answer Teams messages, book my timesheets, verify deployments through an ERP web client on a Windows terminal server, and manage API keys in a SaaS portal. None of these systems expose an API I’m allowed to use.</p>
+
+<p>They all have web UIs, though. And that turns out to be enough.</p>
+
+<p>The trick is simple to state and messy to implement well: <strong>treat the web app itself as the API.</strong> Drive a real browser session through the Chrome DevTools Protocol (CDP), wrap it in MCP tools, and hand those tools to your agents. This post is about the patterns that make the difference between a toy demo and something that runs unattended for months.</p>
+
+<h2 id="the-architecture-mcp-as-the-bridge">The Architecture: MCP as the Bridge</h2>
+
+<p>The layering I’ve settled on:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+</pre></td><td class="rouge-code"><pre>AI Agent ──&gt; MCP Server (tools: "send message", "list mail", "book hours")
+                │
+                ▼
+        Playwright / CDP client
+                │
+                ▼
+        Real browser session (Edge/Chrome, logged in)
+                │
+                ▼
+        The web app (the actual "API")
+</pre></td></tr></tbody></table></code></pre></div></div>
+
+<p>The agent never sees a browser. It sees clean, high-level tools: <code class="language-plaintext highlighter-rouge">teams_send_message</code>, <code class="language-plaintext highlighter-rouge">outlook_get_freebusy</code>, <code class="language-plaintext highlighter-rouge">navision_open_journal</code>. The browser automation lives entirely inside the MCP server.</p>
+
+<p>This matters more than it sounds. If your agent has to reason about “click the third button in the ribbon, then wait for the spinner”, it will do it wrong at 3 AM. If it can call <code class="language-plaintext highlighter-rouge">navision_post_timesheet(week=40)</code>, it does it right every time.</p>
+
+<h2 id="pattern-1-one-login-months-of-headless-operation">Pattern 1: One Login, Months of Headless Operation</h2>
+
+<p>The first thing everyone asks: “Don’t you have to log in constantly?” No — and solving this properly is the foundation of everything else.</p>
+
+<ul>
+  <li><strong>Dedicated browser profile per target.</strong> Each web app gets its own persistent profile directory. Cookies, session state, and (where the app supports it) “remember me” tokens survive restarts.</li>
+  <li><strong>Owner-mode login exactly once.</strong> For the initial login and every rare re-auth, the automation opens a <em>visible</em> browser window (WSLg in my case) on my desktop. I log in, the session persists to the profile, and the window closes. From then on, headless instances reuse that profile.</li>
+  <li><strong>Silent renewal where possible.</strong> Many SSO providers (Keycloak, Entra ID) support silent token renewal as long as the session cookie is alive. The bridge renews in the background; nobody notices.</li>
+</ul>
+
+<p>The lesson: <strong>the login is a one-time human event, not a recurring automation problem.</strong> Design for it explicitly — a <code class="language-plaintext highlighter-rouge">login</code> tool that opens the owner window — instead of scattering credential handling through your code.</p>
+
+<h2 id="pattern-2-remote-browsers-over-throwaway-tunnels">Pattern 2: Remote Browsers over Throwaway Tunnels</h2>
+
+<p>The nastiest case: the app you need runs <em>on a terminal server</em>. You can’t install Playwright there, and RDP screenshots into an LLM are slow, lossy and fragile.</p>
+
+<p>The pattern that works:</p>
+
+<ol>
+  <li>Run an Edge/Chrome instance <strong>on the terminal server</strong> with <code class="language-plaintext highlighter-rouge">--remote-debugging-port=9222</code>.</li>
+  <li>Expose CDP through a <strong>Cloudflare Quick Tunnel</strong> (<code class="language-plaintext highlighter-rouge">cloudflared tunnel --url http://localhost:9222</code>). No firewall rules, no VPN, no static IP — you get a random <code class="language-plaintext highlighter-rouge">*.trycloudflare.com</code> URL.</li>
+  <li>Write that URL to a file that syncs to the machine where your agent runs (I use OneDrive: <code class="language-plaintext highlighter-rouge">tunnel-url.txt</code>). The CDP client reads it at connect time.</li>
+  <li>Put a <strong>basic-auth injector</strong> in front of the tunnel. A random public URL that speaks raw CDP is an remote-code-execution-as-a-service; don’t ship that.</li>
+</ol>
+
+<p>Yes, the tunnel URL rotates. That’s a feature — it forces you to build the self-healing described below.</p>
+
+<h2 id="pattern-3-extract-what-the-llm-needs-not-what-exists">Pattern 3: Extract What the LLM Needs, Not What Exists</h2>
+
+<p>Naive browser automation fails because it passes <em>pixels</em> or <em>raw HTML</em> to the model. Both are expensive and brittle. What works:</p>
+
+<ul>
+  <li><strong><code class="language-plaintext highlighter-rouge">innerText</code> over screenshots.</strong> A page’s visible text is cheap, deterministic, and usually all the agent needs to decide what to do.</li>
+  <li><strong>ARIA labels over CSS selectors.</strong> CSS classes get regenerated on every deploy. ARIA labels (<code class="language-plaintext highlighter-rouge">aria-label="Week view"</code>, grid cell labels) survive redesigns because they’re the accessibility contract. My calendar automation reads busy slots from ARIA labels of the week view — it has survived two UI updates untouched.</li>
+  <li><strong>Structured extraction at the bridge.</strong> Parse tables, message lists, and attachments <em>inside</em> the MCP server; return JSON. The agent gets <code class="language-plaintext highlighter-rouge">"from": "...", "subject": "...", "unread": true</code> instead of a wall of DOM.</li>
+  <li><strong>Trigger words, not full text, for classification calls.</strong> When the agent needs a second opinion, send extracted keywords only — never paste the raw page into a model.</li>
+</ul>
+
+<h2 id="pattern-4-self-healing-bridges-this-is-the-real-work">Pattern 4: Self-Healing Bridges (This Is the Real Work)</h2>
+
+<p>Everything above breaks eventually. Tunnels rotate, sessions expire, the target deploys a redesign on a Friday. The difference between a demo and production is what happens next:</p>
+
+<ul>
+  <li><strong>Health checks before every use.</strong> Ping the CDP endpoint (or validate the session) before executing a tool call. Detect breakage <em>before</em> the agent does.</li>
+  <li><strong>Reconnect from the source of truth.</strong> If the tunnel URL changed, re-read the synced file. If the session died, reopen with the persistent profile. If that fails, surface a single actionable message to the human — “SSO login required” — with a <code class="language-plaintext highlighter-rouge">login</code> tool to fix it, instead of a stack trace.</li>
+  <li><strong>Retry with suppression, not alert storms.</strong> A flaky endpoint should not page you twelve times. Log suppressed retries (<code class="language-plaintext highlighter-rouge">notify_suppressed</code>), escalate only on state <em>changes</em> (broken → recovered always notifies; same-state re-notifies at most every few hours).</li>
+  <li><strong>Fail safe, fail idempotent.</strong> Cursor files and processed-markers for anything the agent harvests or books. A crashed run must never cause double-submission.</li>
+</ul>
+
+<h2 id="pattern-5-when-scraping-fails-go-raw">Pattern 5: When Scraping Fails, Go Raw</h2>
+
+<p>Sometimes the UI is the wrong layer — too dynamic, too slow, or mid-redesign. The web UI is a <em>client</em> of an internal API, and that API is usually reachable with the same session cookies.</p>
+
+<ul>
+  <li>Open the browser’s dev tools once, watch the network tab, and note the GraphQL/REST endpoints the app actually calls.</li>
+  <li>Replay them with the session token from your persistent profile — or better, reconstruct the <strong>token refresh chain</strong> yourself (for Keycloak: a single refresh-token request against the realm’s token endpoint).</li>
+  <li>Keep the UI path as fallback. Raw API for reads, UI for the writes you don’t fully understand yet.</li>
+</ul>
+
+<p>This hybrid saved one of my integrations entirely: the portal’s SPA was rebuilt, all selectors died, and the raw GraphQL calls with a hand-rolled refresh chain kept working without any browser at all.</p>
+
+<h2 id="the-boring-rules-that-keep-it-alive">The Boring Rules That Keep It Alive</h2>
+
+<p>A few things that sound obvious and still cost me debugging nights:</p>
+
+<ul>
+  <li><strong>Never log secrets.</strong> API keys, cookies, tokens — mask or omit. (Pro tip: if you ever paste a key into a chat with an agent, <em>the error message of the next failed call</em> will happily leak its hash. Logs are forever.)</li>
+  <li><strong>One session per target, one target per session.</strong> Multi-tenant apps (multiple Microsoft 365 tenants, multiple accounts) need <em>separate</em> browser profiles. Mixing tenants in one profile is how messages end up in the wrong place.</li>
+  <li><strong>Read-only by default.</strong> Destructive tools exist but stay behind explicit confirmation. The agent proposes; the human disposes — except for the workflows you’ve explicitly promoted to autonomous.</li>
+  <li><strong>Verify the recipient before every send.</strong> Contact-name fuzziness (“Top” vs “Tobi”) is real. A message to the wrong chat is not retrievable.</li>
+</ul>
+
+<h2 id="what-this-buys-you">What This Buys You</h2>
+
+<p>Once the bridges exist, agents stop being chat toys and become operators:</p>
+
+<ul>
+  <li>“What’s on my calendar Thursday?” — answered from the actual calendar, not a guess.</li>
+  <li>“Check the unread mail from last night and summarize anything important.” — every morning, before I wake up.</li>
+  <li>“Book this week’s timesheets per our conventions.” — prepared as copy-paste blocks with rounding rules applied.</li>
+  <li>“Check the AI portal’s new model announcements.” — extracted from a UI whose only public interface is JavaScript.</li>
+</ul>
+
+<p>The web app becomes just another tool in the agent’s belt — same status as the shell or the filesystem.</p>
+
+<h2 id="limits--etiquette">Limits &amp; Etiquette</h2>
+
+<p>Be honest about the trade-offs: UI redesigns <em>will</em> break selectors (ARIA helps, doesn’t immunize); you’re dependent on session lifetimes you don’t control; and this only ever runs against <strong>accounts you own</strong> — your own mail, your own tenant, your own portal logins. Automating <em>your</em> use of <em>your</em> accounts through <em>their</em> intended UI is one thing; scraping other people’s systems is a different conversation entirely.</p>
+
+<h2 id="wrap-up">Wrap-up</h2>
+
+<p>CDP-based browser automation is the pragmatic superpower for AI agents in a world where most useful software still ships without a usable API. The ingredients are unglamorous — persistent profiles, tunnels, ARIA selectors, retry logic — but together they turn “the web app” into a first-class tool surface. Start with one app you touch daily, build the bridge, and let your agents do the clicking.</p>
+
+<p>If this sounds familiar from the MCP world: yes, this is exactly the “agent harness meets legacy reality” story. The browser was always the universal API. Now your agents know how to drive it.</p>]]></content><author><name></name></author><category term="automation" /><category term="ai" /><category term="agents" /><category term="cdp" /><category term="playwright" /><category term="mcp" /><category term="browser" /><category term="reverse-engineering" /><category term="cdp" /><category term="playwright" /><category term="mcp" /><category term="ai-agents" /><category term="browser-automation" /><category term="reverse-engineering" /><category term="sso" /><category term="tunnels" /><summary type="html"><![CDATA[My AI agents read my mail, answer Teams messages, book my timesheets, verify deployments through an ERP web client on a Windows terminal server, and manage API keys in a SaaS portal. None of these systems expose an API I’m allowed to use.]]></summary></entry><entry><title type="html">restgeld.: Daily Allowance Tracking Without the Frustration</title><link href="https://lowlifehigh.tech/2026/" rel="alternate" type="text/html" title="restgeld.: Daily Allowance Tracking Without the Frustration" /><published>2026-08-25T09:30:00+02:00</published><updated>2026-08-25T09:30:00+02:00</updated><id>https://lowlifehigh.tech/restgeld-daily-allowance-tracker</id><content type="html" xml:base="https://lowlifehigh.tech/2026/"><![CDATA[<p>Traditional budgeting apps have a fundamental flaw: <strong>they demand bookkeeping where all you actually want is peace of mind.</strong></p>
+
+<p>Who genuinely enjoys splitting a grocery receipt into 14 distinct categories—<em>groceries</em>, <em>household</em>, <em>pharmacy</em>, <em>entertainment</em>—only to be greeted on the 20th of the month by a glaring red progress bar and buyer’s remorse? The inevitable outcome: after two weeks of meticulous ledger-keeping, you burn out and abandon the app.</p>
+
+<p>That’s why I built <strong><a href="https://pipelinedave.github.io/restgeld/">restgeld.</a></strong>—a radically minimalist, mobile-first <strong>Daily Allowance Tracker (PWA)</strong> built on a simple philosophy: <strong>Every day is a fresh start with a single, clear number.</strong></p>
+
+<hr />
+
+<h2 id="the-name-a-bilingual-double-entendre">The Name: A Bilingual Double Entendre</h2>
+
+<p>The name <strong>restgeld.</strong> works on two distinct levels:</p>
+
+<ul>
+  <li>In <strong>German</strong>, <em>“Rest”</em> means <em>what’s left / remaining</em> and <em>“Geld”</em> means <em>money</em>—literally your remaining spending money for the day.</li>
+  <li>In <strong>English</strong>, <em>“Rest”</em> embodies <em>calm, tranquility, and peace of mind</em>.</li>
+</ul>
+
+<p>Combine the two, and you get the core ethos: you can <strong>rest easy</strong> knowing your daily <strong>geld</strong> is 100% guilt-free and fully allocated. No mental math at the checkout, no late-month panic.</p>
+
+<hr />
+
+<h2 id="the-core-concept-one-number-for-the-here--now">The Core Concept: One Number for the Here &amp; Now</h2>
+
+<p>Instead of watching a monthly budget pool slowly evaporate into abstract anxiety, <strong>restgeld.</strong> takes your freely available pocket money (whatever remains after rent, utilities, fixed subscriptions, and savings targets) and splits it evenly across the days of your billing cycle.</p>
+
+\[\text{Daily Budget} = \frac{\text{Monthly Budget}}{\text{Days in Period}}\]
+
+<p>The magic lies in how it adapts to daily human reality:</p>
+
+<ol>
+  <li><strong>Spent less today?</strong> The unused portion automatically flows into your savings cushion and increases your daily allowance for the remaining days.</li>
+  <li><strong>Had a bigger expense?</strong> Going over doesn’t trigger guilt trips or broken graphs—it gently redistributes the difference across the rest of the month.</li>
+  <li><strong>Zero-euro days?</strong> Taking a “no-spend” day noticeably boosts your allowance for the rest of the week.</li>
+</ol>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+2
+</pre></td><td class="rouge-code"><pre>Monthly Budget: 350 € (31 Days) ➔ Base: 11.29 € / day
+2 Zero-Spend Days / Week ➔ True Active Budget: ~15.80 € / day 🔥
+</pre></td></tr></tbody></table></code></pre></div></div>
+
+<hr />
+
+<h2 id="feature-highlights-zero-friction-in-daily-life">Feature Highlights: Zero Friction in Daily Life</h2>
+
+<p>When designing <strong>restgeld.</strong>, the guiding principle was speed and real-world utility:</p>
+
+<ul>
+  <li>⚡ <strong>2-Second Expense Logging:</strong> Custom mobile numpad integration with decimal mode (<code class="language-plaintext highlighter-rouge">inputmode="decimal"</code>), real-time budget impact feedback, and one-tap quick-note chips for frequent purchases (<em>Coffee</em>, <em>Snack</em>, <em>Lunch</em>).</li>
+  <li>🔥 <strong>Gamification &amp; Spar-Streaks:</strong> An animated flame badge, streak milestones, and a zero-euro day counter that turn mindful spending into a satisfying daily habit.</li>
+  <li>📱 <strong>Offline-First PWA:</strong> Zero mobile reception in a supermarket basement? An offline outbox queues your transactions and transparently syncs them as soon as connectivity returns.</li>
+  <li>🔮 <strong>Month-End Projection:</strong> At-a-glance forecasting that tells you exactly where you’ll land by the end of the period based on your current spending velocity.</li>
+  <li>🔒 <strong>100% Data Sovereignty:</strong> No banking API integrations required, no third-party tracking, no forced cloud accounts. Full one-click CSV and JSON backup/restore built straight into settings.</li>
+</ul>
+
+<hr />
+
+<h2 id="under-the-hood-clean-fast--self-hostable">Under the Hood: Clean, Fast &amp; Self-Hostable</h2>
+
+<p>No bloated client-side frameworks, no heavy backend middleware.</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+</pre></td><td class="rouge-code"><pre>┌──────────────────────────────────────────────────────────┐
+│                      restgeld. Stack                     │
+├─────────────────────────┬────────────────────────────────┤
+│ Frontend                │ Vue 3 + TypeScript + Vite PWA  │
+│ Backend API             │ Go 1.22 (net/http + lib/pq)    │
+│ Database                │ PostgreSQL 16 (PVC)            │
+│ Deployment              │ Vercel Preview, k3s &amp; Docker   │
+└─────────────────────────┴────────────────────────────────┘
+</pre></td></tr></tbody></table></code></pre></div></div>
+
+<ul>
+  <li><strong>Go REST Backend:</strong> Compiles into a scratch container image with sub-millisecond response times and automated schema migrations via Go <code class="language-plaintext highlighter-rouge">embed.FS</code>.</li>
+  <li><strong>Vue 3 Mobile PWA:</strong> Minimalist OLED-dark aesthetic without heavy CSS frameworks, achieving instant load times and tested with Vitest and Playwright.</li>
+  <li><strong>GitOps &amp; Deployment Pipeline:</strong> Dual setup leveraging automated <strong>Vercel Preview Deployments</strong> for pull requests alongside GitOps automation via <strong>Flux CD</strong> on my local k3s cluster (<code class="language-plaintext highlighter-rouge">restgeld.stillon.top</code>).</li>
+</ul>
+
+<hr />
+
+<h2 id="quickstart-self-host-in-seconds">Quickstart: Self-Host in Seconds</h2>
+
+<p>If you want to run your own private instance, you can spin it up with Docker Compose in seconds:</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+2
+3
+</pre></td><td class="rouge-code"><pre>git clone https://github.com/pipelinedave/restgeld.git
+<span class="nb">cd </span>restgeld
+docker compose up <span class="nt">-d</span>
+</pre></td></tr></tbody></table></code></pre></div></div>
+
+<p>The app is immediately live at <code class="language-plaintext highlighter-rouge">http://localhost:3000</code> (or behind your favorite reverse proxy / Cloudflare tunnel).</p>
+
+<hr />
+
+<h2 id="explore-the-project">Explore the Project</h2>
+
+<ul>
+  <li>🌐 <strong>Landing Page &amp; Interactive Calculator:</strong> <a href="https://pipelinedave.github.io/restgeld/">pipelinedave.github.io/restgeld</a></li>
+  <li>💻 <strong>GitHub Source Code:</strong> <a href="https://github.com/pipelinedave/restgeld">github.com/pipelinedave/restgeld</a></li>
+</ul>
+
+<p>Check it out, try the interactive calculator on the landing page, and let me know your thoughts!</p>]]></content><author><name></name></author><category term="projects" /><category term="devops" /><category term="self-hosting" /><category term="kubernetes" /><category term="restgeld" /><category term="golang" /><category term="vue" /><category term="pwa" /><category term="k3s" /><category term="kubernetes" /><category term="personal-finance" /><category term="open-source" /><category term="devops" /><summary type="html"><![CDATA[Traditional budgeting apps have a fundamental flaw: they demand bookkeeping where all you actually want is peace of mind.]]></summary></entry><entry><title type="html">K3s, GitOps, and AI: My Copilot-Powered Cluster Management</title><link href="https://lowlifehigh.tech/2025/" rel="alternate" type="text/html" title="K3s, GitOps, and AI: My Copilot-Powered Cluster Management" /><published>2025-05-17T11:00:00+02:00</published><updated>2025-05-17T11:00:00+02:00</updated><id>https://lowlifehigh.tech/k3s-gitops-ai-copilot-cluster-management</id><content type="html" xml:base="https://lowlifehigh.tech/2025/"><![CDATA[<p>Managing Kubernetes clusters, even a relatively streamlined one like k3s, can often feel like a juggling act. There are manifests to write, configurations to track, deployments to verify, and the ever-present challenge of keeping documentation in sync with reality. For a while now, I’ve been on a journey to refine my k3s cluster management, and I’m thrilled to share a setup that has truly transformed my workflow: a GitOps-centric approach supercharged by GitHub Copilot.</p>
+
+<p>My entire cluster configuration lives in my <code class="language-plaintext highlighter-rouge">k3s-config</code> repository, which you can explore to see these principles in action.</p>
+
+<h2 id="the-foundation-gitops-with-fluxcd">The Foundation: GitOps with FluxCD</h2>
+
+<p>At the heart of my strategy is a steadfast commitment to GitOps. For me, this means the <code class="language-plaintext highlighter-rouge">k3s-config</code> Git repository is the <em>single source of truth</em>. If it’s not in the repo, it doesn’t (or shouldn’t) exist in the cluster. FluxCD is the diligent operator that makes this happen, continuously reconciling the state of my cluster with what’s defined in the <code class="language-plaintext highlighter-rouge">main</code> branch.</p>
+
+<p>This provides a solid baseline:</p>
+
+<ul>
+  <li><strong>Version Control for Infrastructure</strong>: Every change is a commit, auditable and revertible.</li>
+  <li><strong>Consistency</strong>: What you see in Git is what you get in the cluster.</li>
+  <li><strong>Automation</strong>: Flux handles the deployment pipeline automatically.</li>
+</ul>
+
+<p>But even with this robust foundation, the manual effort of creating, updating, and documenting configurations can be significant. That’s where my AI assistant steps in.</p>
+
+<h2 id="the-supercharger-github-copilot-joins-the-fray">The Supercharger: GitHub Copilot Joins the Fray</h2>
+
+<p>Integrating GitHub Copilot into my daily operations has been nothing short of a game-changer. It’s not just about code completion; it’s about having an intelligent partner that understands my specific context, patterns, and even my documentation needs.</p>
+
+<p>Here’s how Copilot elevates my GitOps workflow:</p>
+
+<h3 id="1-accelerated-development-and-manifest-creation">1. Accelerated Development and Manifest Creation</h3>
+
+<p>Writing YAML can be tedious and error-prone. Copilot, armed with the context of my repository (including my <code class="language-plaintext highlighter-rouge">cluster-context.md</code> which outlines my specific conventions), significantly speeds this up.</p>
+
+<ul>
+  <li><strong>Smart Manifest Generation</strong>: Need a new Deployment, Service, or Ingress? Copilot can draft it based on a simple prompt, often correctly inferring details like application names and port numbers.</li>
+  <li><strong>Adherence to Standards</strong>: I have critical protection policies, like ensuring all PersistentVolumeClaims (PVCs) include the <code class="language-plaintext highlighter-rouge">kubernetes.io/pvc-protection</code> finalizer and that all Ingresses follow my <code class="language-plaintext highlighter-rouge">app-name.stillon.top</code> domain schema with <code class="language-plaintext highlighter-rouge">letsencrypt-prod</code> issuer. Copilot helps me remember and implement these by suggesting the correct snippets or even modifying existing manifests to include them.</li>
+  <li><strong>Flux Kustomizations</strong>: Creating the <code class="language-plaintext highlighter-rouge">Kustomization</code> resources in my <code class="language-plaintext highlighter-rouge">apps/</code> directory to tell Flux about new applications is also streamlined. Copilot knows the structure and can generate the necessary YAML quickly.</li>
+</ul>
+
+<h3 id="2-living-breathing-documentation">2. Living, Breathing Documentation</h3>
+
+<p>This is perhaps one of the most remarkable aspects. I’ve established an “Auto-Documentation Update” process where Copilot plays a key role. When I make significant changes or explicitly ask, Copilot helps me:</p>
+
+<ul>
+  <li><strong>Update Application Lists</strong>: It can scan my <code class="language-plaintext highlighter-rouge">apps/</code> and <code class="language-plaintext highlighter-rouge">apps-incomplete/</code> directories and update the “Fully Managed Applications” and “Partially Managed Applications” sections in my documentation.</li>
+  <li><strong>Verify Repository Structure</strong>: It helps ensure my documented repository structure matches reality.</li>
+  <li><strong>Keep Key Scripts Documented</strong>: New scripts in <code class="language-plaintext highlighter-rouge">scripts/</code> or changes to existing ones? Copilot assists in updating their descriptions.</li>
+</ul>
+
+<p>This means my <code class="language-plaintext highlighter-rouge">docs/README.md</code> and the crucial <code class="language-plaintext highlighter-rouge">cluster-context.md</code> (which Copilot itself uses for context!) stay remarkably up-to-date. It’s like having a dedicated technical writer who’s also an expert on my system.</p>
+
+<h3 id="3-intelligent-cluster-interaction-via-mcp-tools">3. Intelligent Cluster Interaction via MCP Tools</h3>
+
+<p>Through Model Context Protocol (MCP) tools, Copilot can directly (but safely) interact with my cluster for verification and troubleshooting. Instead of me manually running a series of <code class="language-plaintext highlighter-rouge">kubectl</code> or <code class="language-plaintext highlighter-rouge">flux</code> commands, I can ask Copilot:</p>
+
+<ul>
+  <li>“Are all pods running in the <code class="language-plaintext highlighter-rouge">choremane-prod</code> namespace?” (Uses <code class="language-plaintext highlighter-rouge">bb7_pods_list_in_namespace</code>)</li>
+  <li>“What’s the status of the <code class="language-plaintext highlighter-rouge">docspell</code> Kustomization in Flux?” (Uses <code class="language-plaintext highlighter-rouge">bb7_get_kubernetes_resources</code>)</li>
+  <li>“Show me the recent logs for the <code class="language-plaintext highlighter-rouge">linkding</code> pod.” (Uses <code class="language-plaintext highlighter-rouge">bb7_pods_log</code>)</li>
+</ul>
+
+<p>If something seems off, Copilot can even suggest reconciliation commands or help pinpoint issues by analyzing resource statuses.</p>
+
+<h3 id="4-guardian-of-best-practices">4. Guardian of Best Practices</h3>
+
+<p>My workflow has specific manual steps, like creating namespaces with <code class="language-plaintext highlighter-rouge">kubectl create namespace &lt;namespace&gt;</code> <em>before</em> Flux tries to deploy to them (a crucial step to protect PVCs). Copilot consistently reminds me of these nuances. Similarly, when handling sensitive data, it guides me through the SealedSecrets workflow: create locally, use <code class="language-plaintext highlighter-rouge">kubeseal</code>, commit the sealed version, and delete the original.</p>
+
+<h2 id="a-peek-inside-my-k3s-config-repository">A Peek Inside My <code class="language-plaintext highlighter-rouge">k3s-config</code> Repository</h2>
+
+<p>My repository structure is designed to support this workflow:</p>
+
+<ul>
+  <li><code class="language-plaintext highlighter-rouge">kustomize/</code> and <code class="language-plaintext highlighter-rouge">kustomize-incomplete/</code>: Contain the actual Kubernetes manifests.</li>
+  <li><code class="language-plaintext highlighter-rouge">apps/</code> and <code class="language-plaintext highlighter-rouge">apps-incomplete/</code>: House the Flux Kustomization CRDs that point to the manifest directories.</li>
+  <li><code class="language-plaintext highlighter-rouge">flux-system/</code>: Holds the Flux bootstrap configuration.</li>
+  <li><code class="language-plaintext highlighter-rouge">docs/</code>: The comprehensive documentation hub, co-maintained by me and Copilot.</li>
+  <li><code class="language-plaintext highlighter-rouge">scripts/</code>: Utility scripts, often for tasks that bridge manual steps and GitOps.</li>
+</ul>
+
+<p>This clear separation of concerns makes it easy for both humans and Copilot to navigate and understand the configuration.</p>
+
+<h2 id="the-payoff-tangible-benefits">The Payoff: Tangible Benefits</h2>
+
+<p>Adopting this Copilot-enhanced GitOps model has yielded significant advantages:</p>
+
+<ul>
+  <li><strong>Increased Speed</strong>: Repetitive tasks are automated or significantly sped up.</li>
+  <li><strong>Improved Consistency</strong>: Adherence to my standards is much higher.</li>
+  <li><strong>Reduced Errors</strong>: Fewer typos or forgotten critical configurations in my YAML.</li>
+  <li><strong>Truly Up-to-Date Documentation</strong>: This alone is a massive win.</li>
+  <li><strong>Empowered Me</strong>: Complex Kubernetes operations become more accessible with an AI assistant ready to guide and explain.</li>
+  <li><strong>Enhanced Learning</strong>: Copilot often shows me efficient ways to achieve tasks or reminds me of commands and configurations, acting as an interactive learning tool.</li>
+</ul>
+
+<h2 id="looking-ahead">Looking Ahead</h2>
+
+<p>My journey with k3s, GitOps, Flux, and now GitHub Copilot has been incredibly rewarding. It feels like I’m at the forefront of a new era in operations, where AI doesn’t just assist with code but becomes an integral part of managing complex systems. The <code class="language-plaintext highlighter-rouge">k3s-config</code> repository is a living testament to this synergy.</p>
+
+<p>If you’re managing Kubernetes, I highly encourage you to explore how a GitOps foundation, coupled with the intelligence of tools like GitHub Copilot, can revolutionize your workflows. It certainly has for me!</p>]]></content><author><name></name></author><category term="kubernetes" /><category term="gitops" /><category term="flux" /><category term="copilot" /><category term="automation" /><category term="devops" /><category term="k3s" /><category term="kubernetes" /><category term="k3s" /><category term="gitops" /><category term="flux" /><category term="copilot" /><category term="ai" /><category term="automation" /><category term="devops" /><category term="cluster-management" /><summary type="html"><![CDATA[Managing Kubernetes clusters, even a relatively streamlined one like k3s, can often feel like a juggling act. There are manifests to write, configurations to track, deployments to verify, and the ever-present challenge of keeping documentation in sync with reality. For a while now, I’ve been on a journey to refine my k3s cluster management, and I’m thrilled to share a setup that has truly transformed my workflow: a GitOps-centric approach supercharged by GitHub Copilot.]]></summary></entry><entry><title type="html">Introducing the Copilot Todo System: A Hands-Off Task Manager</title><link href="https://lowlifehigh.tech/2025/" rel="alternate" type="text/html" title="Introducing the Copilot Todo System: A Hands-Off Task Manager" /><published>2025-05-08T00:00:00+02:00</published><updated>2025-05-08T00:00:00+02:00</updated><id>https://lowlifehigh.tech/Copilot-Todo-System-Hands-Off-Task-Manager</id><content type="html" xml:base="https://lowlifehigh.tech/2025/"><![CDATA[<h3 id="streamlining-developer-workflow-with-the-copilot-todo-system">Streamlining Developer Workflow with the Copilot Todo System</h3>
+
+<p>As developers, we constantly juggle ideas, bug fixes, and feature requests while working on projects. Often, these ideas strike us at the most inconvenient times: mid-task, during debugging, or when implementing a feature. To address this chaotic yet inevitable part of the creative process, I’ve built the <strong>Copilot Todo System</strong>.</p>
+
+<p>This system, which you can find in the <a href="https://github.com/pipelinedave/copilot-todo-system-template">Copilot Todo System Template repository</a>, is designed to bring order to the chaos by leveraging GitHub Copilot as your task management assistant.</p>
+
+<hr />
+
+<h3 id="the-problem-too-many-unorganized-ideas">The Problem: Too Many Unorganized Ideas</h3>
+
+<p>In my daily workflow, I often encounter:</p>
+
+<ul>
+  <li>Ideas for new features while working on unrelated tasks</li>
+  <li>Bugs and issues that need fixing but not immediately</li>
+  <li>Performance improvements or maintenance tasks that are low priority</li>
+</ul>
+
+<p>The result? A cluttered list of bullet points in a markdown file, sticky notes, or worse—mental overload. I needed a hands-off solution to manage this without interrupting my flow.</p>
+
+<hr />
+
+<h3 id="the-solution-automated-organization-with-copilot">The Solution: Automated Organization with Copilot</h3>
+
+<p>The <strong>Copilot Todo System</strong> is a simple yet powerful task management approach. Here’s how it works:</p>
+
+<ol>
+  <li><strong>A Centralized Todo File</strong>: All ideas, issues, bugs, and tasks are added to a single <code class="language-plaintext highlighter-rouge">.github/copilot/Todo.md</code> file.</li>
+  <li><strong>Automatic Organization</strong>: Every time I mention “todo” in a Copilot chat, it parses the file, formalizes tasks, and organizes them into categories and priorities.</li>
+  <li><strong>Hands-Off Updates</strong>: I can keep adding bullet points anywhere in the file, and Copilot will ensure the file remains clean, structured, and actionable.</li>
+  <li><strong>Intelligent Suggestions</strong>: Copilot reviews the tasks, prioritizes them, and even suggests the next best task to tackle.</li>
+</ol>
+
+<hr />
+
+<h3 id="how-it-works">How It Works</h3>
+
+<p>The repository includes a sample structure for <code class="language-plaintext highlighter-rouge">.github/copilot/Todo.md</code> and instructions for Copilot to follow. Here’s a quick overview of the setup:</p>
+
+<h4 id="todo-file-example">Todo File Example</h4>
+
+<div class="language-markdown highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+</pre></td><td class="rouge-code"><pre><span class="gh"># Project Todo List</span>
+
+<span class="gu">## Inbox</span>
+<span class="p">-</span> Add dark mode to the dashboard
+<span class="p">-</span> Fix login bug when user uses special characters
+
+<span class="gu">## Organized Tasks</span>
+
+<span class="gu">### High Priority</span>
+<span class="p">-</span> Fix login bug when user uses special characters (#security)
+
+<span class="gu">### Medium Priority</span>
+<span class="p">-</span> Add dark mode to the dashboard (#feature)
+
+<span class="gu">## In Progress</span>
+<span class="c">&lt;!-- Tasks currently being worked on --&gt;</span>
+
+<span class="gu">## Completed</span>
+<span class="c">&lt;!-- Finished tasks --&gt;</span>
+</pre></td></tr></tbody></table></code></pre></div></div>
+
+<p>Copilot takes care of moving tasks from the <strong>Inbox</strong> to the <strong>Organized Tasks</strong> section, tags them, and ensures everything stays clean and sorted.</p>
+
+<h4 id="instructions-for-copilot">Instructions for Copilot</h4>
+
+<p>The system uses a <code class="language-plaintext highlighter-rouge">.github/copilot/CopilotTodo.md</code> file to provide specific guidance on how Copilot should process the Todo file. This ensures consistent behavior and adaptability over time.</p>
+
+<hr />
+
+<h3 id="getting-started">Getting Started</h3>
+
+<p>If you’re interested in using this system, head over to the <a href="https://github.com/pipelinedave/copilot-todo-system-template">template repository</a>. Clone it, customize the Todo file, and start automating your task management today!</p>
+
+<hr />
+
+<h3 id="why-i-built-this">Why I Built This</h3>
+
+<p>As someone who loves automating workflows and minimizing repetitive tasks, this system embodies my philosophy: <strong>“Let the tools work for you.”</strong> By offloading the mental overhead of task management to GitHub Copilot, I can focus on coding, creating, and solving problems.</p>
+
+<hr />
+
+<h3 id="try-it-out-and-share-your-experience">Try It Out and Share Your Experience</h3>
+
+<p>I’d love to hear how this system works for you and what improvements you’d suggest. Feel free to fork the repository, adapt it to your needs, and let me know your thoughts. Together, we can make task management a breeze for developers everywhere.</p>
+
+<p>Happy coding!</p>
+
+<hr />]]></content><author><name></name></author><category term="productivity" /><category term="tools" /><category term="github" /><category term="copilot" /><category term="automation" /><category term="task management" /><category term="developer tools" /><summary type="html"><![CDATA[Streamlining Developer Workflow with the Copilot Todo System]]></summary></entry><entry><title type="html">Three-Finger Swipe on Linux: macOS Style!</title><link href="https://lowlifehigh.tech/2023/" rel="alternate" type="text/html" title="Three-Finger Swipe on Linux: macOS Style!" /><published>2023-09-20T00:00:00+02:00</published><updated>2023-09-20T00:00:00+02:00</updated><id>https://lowlifehigh.tech/Three-Finger-Swipe-on-Linux-macOS-Style</id><content type="html" xml:base="https://lowlifehigh.tech/2023/"><![CDATA[<h1 id="three-finger-swipe-on-linux-macos-style">Three-Finger Swipe on Linux: macOS Style!</h1>
+
+<p>Man, if you’re like me, you dig how macOS handles three-finger swipes to switch desktops. It’s smooth, it’s cool, it’s where it’s at. But what about us Linux folks? We want in on that action too, right?</p>
+
+<h2 id="the-idea">The Idea</h2>
+
+<p>The jam is simple. On macOS, a three-finger swipe on the trackpad lets you seamlessly switch between virtual desktops. It’s slicker than a greased-up watermelon, let me tell you. Now, Linux ain’t natively geared for that, but why should we miss out?</p>
+
+<h2 id="the-solution">The Solution</h2>
+
+<p>Hold tight, ‘cause this is where the magic happens. We’re gonna use <code class="language-plaintext highlighter-rouge">libinput</code> to catch touchpad events and <code class="language-plaintext highlighter-rouge">wmctrl</code> to switch desktops. You dig?</p>
+
+<p>Before runnin’ the script, make sure you’ve got <code class="language-plaintext highlighter-rouge">wmctrl</code> installed. If not, hit it with:</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+</pre></td><td class="rouge-code"><pre><span class="nb">sudo </span>apt-get <span class="nb">install </span>wmctrl
+</pre></td></tr></tbody></table></code></pre></div></div>
+<p>or if you’re rollin’ with another package manager, you know the drill.</p>
+
+<h2 id="the-code">The Code</h2>
+<p>Here’s the script in all its glory. Pay attention, ‘cause this is the good stuff.</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+</pre></td><td class="rouge-code"><pre><span class="c">#!/bin/bash</span>
+
+<span class="c"># ----------------------------------------------------------------------------</span>
+<span class="c"># Script Name: three_finger_touchpad_desktop_switch.sh</span>
+<span class="c"># Description: Switch desktops using a 3-finger swipe gesture</span>
+<span class="c"># Author: github.com/pipelinedave</span>
+<span class="c"># Version: 1.1</span>
+<span class="c"># Usage: sudo sh three_finger_touchpad_desktop_switch.sh</span>
+<span class="c"># Note: Update the "device" variable to point to your actual input device.</span>
+<span class="c"># ----------------------------------------------------------------------------</span>
+
+<span class="c"># Check if wmctrl is installed</span>
+<span class="k">if</span> <span class="o">!</span> <span class="nb">command</span> <span class="nt">-v</span> wmctrl &amp;&gt; /dev/null<span class="p">;</span> <span class="k">then
+</span><span class="nb">echo</span> <span class="s2">"Hey, playa! wmctrl ain't installed. Get it via your package manager."</span>
+<span class="nb">exit </span>1
+<span class="k">fi</span>
+
+<span class="c"># Your touchpad device (change to your actual device)</span>
+<span class="nv">device</span><span class="o">=</span><span class="s2">"/dev/input/event6"</span>
+
+<span class="c"># Start the loop and capture libinput events</span>
+<span class="nb">echo</span> <span class="s2">"Looping..."</span>
+
+libinput debug-events <span class="nt">--device</span> <span class="nv">$device</span> | <span class="k">while </span><span class="nb">read</span> <span class="nt">-r</span> line
+<span class="k">do</span>
+<span class="c"># Looking for 3-finger swipes</span>
+<span class="nv">gesture</span><span class="o">=</span><span class="si">$(</span><span class="nb">echo</span> <span class="s2">"</span><span class="nv">$line</span><span class="s2">"</span> | <span class="nb">grep</span> <span class="s1">'GESTURE_SWIPE_UPDATE'</span> | <span class="nb">awk</span> <span class="s1">'{ print $4 }'</span><span class="si">)</span>
+
+<span class="k">if</span> <span class="o">[</span> <span class="s2">"</span><span class="nv">$gesture</span><span class="s2">"</span> <span class="o">=</span> <span class="s2">"3"</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+<span class="c"># Get the vertical direction of the swipe</span>
+<span class="nv">direction</span><span class="o">=</span><span class="si">$(</span><span class="nb">echo</span> <span class="s2">"</span><span class="nv">$line</span><span class="s2">"</span> | <span class="nb">grep</span> <span class="s1">'GESTURE_SWIPE_UPDATE'</span> | <span class="nb">awk</span> <span class="s1">'{ print $7 }'</span><span class="si">)</span>
+
+<span class="c"># If swipe is up</span>
+<span class="k">if</span> <span class="o">[</span> <span class="nt">-n</span> <span class="s2">"</span><span class="nv">$direction</span><span class="s2">"</span> <span class="o">]</span> <span class="o">&amp;&amp;</span> <span class="o">((</span> <span class="si">$(</span><span class="nb">echo</span> <span class="s2">"</span><span class="nv">$direction</span><span class="s2"> &gt; 0"</span> | bc <span class="nt">-l</span><span class="si">)</span> <span class="o">))</span><span class="p">;</span> <span class="k">then
+</span><span class="nb">echo</span> <span class="s2">"Direction: up"</span>
+wmctrl <span class="nt">-s</span> 0  <span class="c"># Switch to desktop 0</span>
+<span class="c"># If swipe is down</span>
+<span class="k">elif</span> <span class="o">[</span> <span class="nt">-n</span> <span class="s2">"</span><span class="nv">$direction</span><span class="s2">"</span> <span class="o">]</span> <span class="o">&amp;&amp;</span> <span class="o">((</span> <span class="si">$(</span><span class="nb">echo</span> <span class="s2">"</span><span class="nv">$direction</span><span class="s2"> &lt; 0"</span> | bc <span class="nt">-l</span><span class="si">)</span> <span class="o">))</span><span class="p">;</span> <span class="k">then
+</span><span class="nb">echo</span> <span class="s2">"Direction: down"</span>
+wmctrl <span class="nt">-s</span> 1  <span class="c"># Switch to desktop 1</span>
+<span class="k">fi
+fi
+done</span>
+</pre></td></tr></tbody></table></code></pre></div></div>
+
+<p>There you have it, folks. Get this script up and running, and you’ll be swiping through your Linux desktops smoother than Barry White’s vocal cords. Can you dig it?</p>]]></content><author><name></name></author><category term="Bash" /><category term="Scripts" /><category term="macOS" /><category term="Touchpad" /><category term="Swipe" /><category term="Feature" /><summary type="html"><![CDATA[Three-Finger Swipe on Linux: macOS Style!]]></summary></entry><entry><title type="html">Introducing memodawg: A Solution for Managing Long WhatsApp Voice Notes</title><link href="https://lowlifehigh.tech/2023/" rel="alternate" type="text/html" title="Introducing memodawg: A Solution for Managing Long WhatsApp Voice Notes" /><published>2023-09-17T00:00:00+02:00</published><updated>2023-09-17T00:00:00+02:00</updated><id>https://lowlifehigh.tech/Introducing%20memodawg:%20A%20Solution%20for%20Managing%20Long%20WhatsApp%20Voice%20Notes</id><content type="html" xml:base="https://lowlifehigh.tech/2023/"><![CDATA[<h1 id="introducing-memodawg-a-solution-for-managing-long-whatsapp-voice-notes">Introducing memodawg: A Solution for Managing Long WhatsApp Voice Notes</h1>
+
+<h2 id="the-problem-long-whatsapp-voice-notes">The Problem: Long WhatsApp Voice Notes</h2>
+
+<p>The genesis of memodawg was driven by the cumbersome task of managing long WhatsApp voice notes. Such notes are not only time-consuming to listen to but also tricky to navigate if you want to revisit specific sections.</p>
+
+<h2 id="overview">Overview</h2>
+
+<p>memodawg is an innovative platform designed to streamline the experience of handling long voice notes through a process called memoization. Crafted in Go, it provides a performance-optimized, user-friendly way to engage with your voice notes.</p>
+
+<h2 id="project-structure">Project Structure</h2>
+
+<p>The project is segmented into two primary components:</p>
+
+<ul>
+  <li>
+    <p><code class="language-plaintext highlighter-rouge">api</code>: The backend, engineered in Go, serves as the heart of memoization operations for voice notes. It manages audio files, performs the memoization, and returns the processed notes to the frontend.</p>
+  </li>
+  <li>
+    <p><code class="language-plaintext highlighter-rouge">frontend</code>: Also powered by Go, this segment offers a simplified UI to interact with your memoized voice notes. It connects to the backend for all operations and presents a seamless user experience.</p>
+  </li>
+</ul>
+
+<p>Each of these components is neatly packed with its own <code class="language-plaintext highlighter-rouge">go.mod</code> file, allowing for localized dependency management and version control.</p>
+
+<h2 id="how-it-works">How it Works</h2>
+
+<p>Upon uploading a voice note to memodawg, the backend takes over and performs memoization. This involves parsing the audio file into smaller, labeled segments for easier navigation. The frontend then allows you to interact with these memoized sections, providing an organized, hassle-free way to engage with long audio messages.</p>
+
+<h2 id="dockerized-for-deployment">Dockerized for Deployment</h2>
+
+<p>Both the backend (<code class="language-plaintext highlighter-rouge">api</code>) and frontend are Dockerized, making the application easily deployable and manageable. It encapsulates the environment, ensuring consistency across different stages of deployment.</p>
+
+<h2 id="kubernetes-support">Kubernetes Support</h2>
+
+<p>memodawg also ships with ready-to-use Kubernetes manifests, providing a straightforward path to scale the application in a Kubernetes cluster. This ensures that memodawg is not just a solution for individuals but can be robustly scaled to serve multiple users across various environments.</p>
+
+<h2 id="newest-feature-idea-azure-quota-notifications">Newest Feature Idea: Azure Quota Notifications</h2>
+
+<p>To add even more value, an upcoming feature aims to offer automatic notifications about your remaining Azure free quota, aiding users in better cloud resource management.</p>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>memodawg offers a much-needed solution for those weighed down by long, unmanageable WhatsApp voice notes. With its Dockerized architecture and Kubernetes-ready manifests, it is poised for easy deployment and scalability. The project represents a synthesis of modern development practices and real-world utility, making it not just a concept but a practical tool for everyday use.</p>]]></content><author><name></name></author><category term="Go" /><category term="Memoization" /><category term="Backend" /><category term="Frontend" /><category term="WhatsApp Voice Notes" /><category term="Docker" /><category term="Kubernetes" /><summary type="html"><![CDATA[Introducing memodawg: A Solution for Managing Long WhatsApp Voice Notes]]></summary></entry><entry><title type="html">Building a Cost-Effective, Hassle-Free Website for a Tattoo Studio</title><link href="https://lowlifehigh.tech/2023/" rel="alternate" type="text/html" title="Building a Cost-Effective, Hassle-Free Website for a Tattoo Studio" /><published>2023-04-22T00:00:00+02:00</published><updated>2023-04-22T00:00:00+02:00</updated><id>https://lowlifehigh.tech/building-a-hassle-free-cost-effective-website-for-a-tattoo-studio.md</id><content type="html" xml:base="https://lowlifehigh.tech/2023/"><![CDATA[<h2 id="the-issue">The Issue</h2>
+
+<p>A non-tech-savvy friend of mine recently decided to open a tattoo studio. I offered to build and host a website for his new venture with minimal cost, maintenance, and coding effort. In this post, I’ll share how I set up a mobile-friendly, SEO-optimized, single-scrolling landing page that makes it easy for customers to get in touch and complies with German law.</p>
+
+<p>First, I registered the TLD brotherhood.ink, which was available and perfectly suited for a tattoo studio. The site needed to serve as a landing page, featuring a simple contact form, a list of offered services, and owner information. Ideally, the site would also integrate the artist’s Instagram feed, filtering by specific hashtags to keep content fresh and relevant.</p>
+
+<h2 id="the-solution">The Solution</h2>
+
+<p>To achieve this, I chose <a href="https://pages.github.com/">GitHub Pages</a> as a free, highly available hosting platform, and <a href="https://jekyllrb.com/">Jekyll</a> as a static site generator. I configured the domain’s DNS to point to GitHub Pages and set up the repository accordingly.</p>
+
+<p>I found a free theme that met our requirements: <a href="https://github.com/y7kim/agency-jekyll-theme">Agency Jekyll Theme</a>. I cloned the theme’s repository into a “jekyll” subfolder within our project root, which simplified the deployment process.</p>
+
+<p>Next, I created a Gemfile to list the required Ruby Gems like Jekyll and some additional helpful gems:</p>
+
+<div class="language-ruby highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+2
+3
+4
+5
+6
+</pre></td><td class="rouge-code"><pre><span class="n">source</span> <span class="s1">'https://rubygems.org'</span>
+<span class="n">gem</span> <span class="s1">'jekyll'</span>
+<span class="n">gem</span> <span class="s1">'jekyll-paginate'</span>
+<span class="n">gem</span> <span class="s1">'jekyll-sitemap'</span>
+<span class="n">gem</span> <span class="s1">'jekyll-feed'</span>
+<span class="n">gem</span> <span class="s1">'jekyll-seo-tag'</span>
+</pre></td></tr></tbody></table></code></pre></div></div>
+
+<p>I also added a GitHub workflow that automates the process of building and deploying the Jekyll site to the gh-pages branch whenever changes are pushed to the main branch or a manual dispatch is triggered. The workflow caches Ruby gems and uses the <a href="https://github.com/helaili/jekyll-action">jekyll-action</a> to build and deploy the site.</p>
+
+<div class="language-yaml highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+</pre></td><td class="rouge-code"><pre><span class="na">name</span><span class="pi">:</span> <span class="s">Build and deploy to branch gh-pages</span>
+
+<span class="na">on</span><span class="pi">:</span>
+  <span class="na">push</span><span class="pi">:</span>
+    <span class="na">branches</span><span class="pi">:</span>
+      <span class="pi">-</span> <span class="s">main</span>
+
+  <span class="na">workflow_dispatch</span><span class="pi">:</span>
+
+<span class="na">jobs</span><span class="pi">:</span>
+  <span class="na">build-and-deploy-jekyll-src-to-branch-gh-pages</span><span class="pi">:</span>
+    <span class="na">runs-on</span><span class="pi">:</span> <span class="s">ubuntu-latest</span>
+    <span class="na">permissions</span><span class="pi">:</span>
+      <span class="na">contents</span><span class="pi">:</span> <span class="s">write</span>
+    <span class="na">steps</span><span class="pi">:</span>
+      <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">📂 setup</span>
+        <span class="na">uses</span><span class="pi">:</span> <span class="s">actions/checkout@v3</span>
+
+      <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">🎁 Cache Ruby gems</span>
+        <span class="na">uses</span><span class="pi">:</span> <span class="s">actions/cache@v3</span>
+        <span class="na">with</span><span class="pi">:</span>
+          <span class="na">path</span><span class="pi">:</span> <span class="s">vendor/bundle</span>
+          <span class="na">key</span><span class="pi">:</span> <span class="s">$-gems-$</span>
+          <span class="na">restore-keys</span><span class="pi">:</span> <span class="pi">|</span>
+            <span class="s">$-gems-</span>
+
+      <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">🚀 Build and deploy</span>
+        <span class="na">uses</span><span class="pi">:</span> <span class="s">helaili/jekyll-action@v2</span>
+        <span class="na">with</span><span class="pi">:</span>
+          <span class="na">token</span><span class="pi">:</span> <span class="s">$</span>
+          <span class="na">jekyll_src</span><span class="pi">:</span> <span class="s1">'</span><span class="s">jekyll'</span>
+          <span class="na">target_branch</span><span class="pi">:</span> <span class="s1">'</span><span class="s">gh-pages'</span>
+          <span class="na">pre_build_commands</span><span class="pi">:</span> <span class="s1">'</span><span class="s">gem</span><span class="nv"> </span><span class="s">update</span><span class="nv"> </span><span class="s">--system'</span>
+</pre></td></tr></tbody></table></code></pre></div></div>
+
+<p>After configuring the deployment branch and enabling HTTPS, I navigated to <a href="https://brotherhood.ink">https://brotherhood.ink</a> and saw the theme’s default look. I then replaced the stock content with the actual business information, tweaked the layout, and replaced the header image.</p>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>There’s still work to be done, such as integrating the Instagram feed, utilizing the installed Jekyll plugins like jekyll-seo-tag, setting up Google Analytics, configuring a mail server, and more. Stay tuned for updates!</p>
+
+<p>Here’s a list of the technologies utilized:</p>
+
+<ul>
+  <li><a href="https://pages.github.com/">GitHub Pages</a></li>
+  <li><a href="https://jekyllrb.com/">Jekyll</a></li>
+  <li><a href="https://github.com/y7kim/agency-jekyll-theme">Agency Jekyll Theme</a></li>
+  <li><a href="https://github.com/jekyll/jekyll-seo-tag">Jekyll SEO Tag</a></li>
+  <li><a href="https://github.com/jekyll/jekyll-sitemap">Jekyll Sitemap</a></li>
+  <li><a href="https://github.com/jekyll/jekyll-feed">Jekyll Feed</a></li>
+  <li><a href="https://github.com/jekyll/jekyll-paginate">Jekyll Paginate</a></li>
+</ul>
+
+<p>This project demonstrates how to create a cost-effective, low-maintenance website using open-source technologies and free hosting services. If you’re looking for a similar solution, give it a try!</p>]]></content><author><name></name></author><category term="DevOps" /><category term="Jekyll" /><category term="GitHub Pages" /><summary type="html"><![CDATA[The Issue]]></summary></entry><entry><title type="html">Understanding GitHub Actions and Ruby Versions for Jekyll: Resolving Compatibility Issues</title><link href="https://lowlifehigh.tech/2023/" rel="alternate" type="text/html" title="Understanding GitHub Actions and Ruby Versions for Jekyll: Resolving Compatibility Issues" /><published>2023-04-20T00:00:00+02:00</published><updated>2023-04-20T00:00:00+02:00</updated><id>https://lowlifehigh.tech/Understanding-GitHub-Actions-and-Ruby-Versions-for-Jekyll</id><content type="html" xml:base="https://lowlifehigh.tech/2023/"><![CDATA[<p><em>Author’s note: I recently encountered an issue with one of my Jekyll projects when using GitHub Actions to build and deploy the site. After some tinkering and research, I discovered how Ruby versions are managed in Jekyll projects and GitHub Actions workflows, and how to resolve compatibility issues. I thought I’d share this knowledge with the community in the hopes it might help someone else.</em></p>
+
+<h2 id="the-issue">The Issue</h2>
+
+<p>I was using the <code class="language-plaintext highlighter-rouge">helaili/jekyll-action@v2</code> Jekyll GitHub Action from the marketplace to build and deploy my site, and I came across an error in my workflow:</p>
+
+<div class="language-console highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+</pre></td><td class="rouge-code"><pre><span class="go">env: can't execute 'ruby-2.7': No such file or directory
+</span></pre></td></tr></tbody></table></code></pre></div></div>
+
+<p>Later, after some adjustments, I encountered another error:</p>
+
+<div class="language-console highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+2
+</pre></td><td class="rouge-code"><pre><span class="gp">sass-embedded-1.62.0-x86_64-linux-musl requires rubygems version &gt;</span><span class="o">=</span> 3.3.22,
+<span class="go">which is incompatible with the current version, 3.1.6
+</span></pre></td></tr></tbody></table></code></pre></div></div>
+
+<h2 id="the-solution">The Solution</h2>
+
+<p>To fix the compatibility issue with the <code class="language-plaintext highlighter-rouge">sass-embedded</code> gem, I used the <code class="language-plaintext highlighter-rouge">pre_build_commands</code> option of the <code class="language-plaintext highlighter-rouge">helaili/jekyll-action@v2</code> action to update RubyGems before building the site. Here’s my final, working GitHub Actions workflow:</p>
+
+<div class="language-yaml highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+</pre></td><td class="rouge-code"><pre><span class="na">name</span><span class="pi">:</span> <span class="s">Build and deploy jekyll site</span>
+
+<span class="na">on</span><span class="pi">:</span>
+  <span class="na">push</span><span class="pi">:</span>
+    <span class="na">branches</span><span class="pi">:</span>
+      <span class="pi">-</span> <span class="s">main</span>
+
+  <span class="na">workflow_dispatch</span><span class="pi">:</span>
+
+<span class="na">jobs</span><span class="pi">:</span>
+  <span class="na">jekyll</span><span class="pi">:</span>
+    <span class="na">runs-on</span><span class="pi">:</span> <span class="s">ubuntu-latest</span>
+    <span class="na">permissions</span><span class="pi">:</span>
+      <span class="na">contents</span><span class="pi">:</span> <span class="s">write</span>
+    <span class="na">steps</span><span class="pi">:</span>
+      <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">📂 setup</span>
+        <span class="na">uses</span><span class="pi">:</span> <span class="s">actions/checkout@v3</span>
+
+      <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">🎁 Cache Ruby gems</span>
+        <span class="na">uses</span><span class="pi">:</span> <span class="s">actions/cache@v2</span>
+        <span class="na">with</span><span class="pi">:</span>
+          <span class="na">path</span><span class="pi">:</span> <span class="s">vendor/bundle</span>
+          <span class="na">key</span><span class="pi">:</span> <span class="s">$-gems-$</span>
+          <span class="na">restore-keys</span><span class="pi">:</span> <span class="pi">|</span>
+            <span class="s">$-gems-</span>
+
+      <span class="pi">-</span> <span class="na">name</span><span class="pi">:</span> <span class="s">🚀 Build and deploy</span>
+        <span class="na">uses</span><span class="pi">:</span> <span class="s">helaili/jekyll-action@v2</span>
+        <span class="na">with</span><span class="pi">:</span>
+          <span class="na">token</span><span class="pi">:</span> <span class="s">$</span>
+          <span class="na">jekyll_src</span><span class="pi">:</span> <span class="s1">'</span><span class="s">jekyll'</span>
+          <span class="na">target_branch</span><span class="pi">:</span> <span class="s1">'</span><span class="s">gh-pages'</span>
+          <span class="na">pre_build_commands</span><span class="pi">:</span> <span class="s1">'</span><span class="s">gem</span><span class="nv"> </span><span class="s">update</span><span class="nv"> </span><span class="s">--system'</span>
+</pre></td></tr></tbody></table></code></pre></div></div>
+
+<p>The key addition to the workflow is the <code class="language-plaintext highlighter-rouge">pre_build_commands</code> option:</p>
+
+<div class="language-yaml highlighter-rouge"><div class="highlight"><pre class="highlight"><code><table class="rouge-table"><tbody><tr><td class="rouge-gutter gl"><pre class="lineno">1
+</pre></td><td class="rouge-code"><pre><span class="na">pre_build_commands</span><span class="pi">:</span> <span class="s1">'</span><span class="s">gem</span><span class="nv"> </span><span class="s">update</span><span class="nv"> </span><span class="s">--system'</span>
+</pre></td></tr></tbody></table></code></pre></div></div>
+
+<p>This command updates RubyGems to the latest version before building the site, which resolves the compatibility issue with the <code class="language-plaintext highlighter-rouge">sass-embedded</code> gem.</p>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>Understanding how Ruby versions and dependencies are managed in Jekyll projects and GitHub Actions workflows, and how to use the <code class="language-plaintext highlighter-rouge">pre_build_commands</code> option, helped me fix the issues I encountered and allowed me to continue building and deploying my site smoothly. I hope this post provides some insight for others who may face similar issues. Happy coding!</p>]]></content><author><name></name></author><category term="jekyll" /><category term="github" /><category term="ruby" /><category term="github-actions" /><summary type="html"><![CDATA[Author’s note: I recently encountered an issue with one of my Jekyll projects when using GitHub Actions to build and deploy the site. After some tinkering and research, I discovered how Ruby versions are managed in Jekyll projects and GitHub Actions workflows, and how to resolve compatibility issues. I thought I’d share this knowledge with the community in the hopes it might help someone else.]]></summary></entry></feed>
